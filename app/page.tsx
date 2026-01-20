@@ -325,7 +325,7 @@ export default function BadmintonMultiCourtPage() {
         </div>
 
         <footer className="mt-8 text-center text-xs text-slate-400">
-          v0：本地 state 記分｜下一步可加：發球權、換邊、每球紀錄、房間同步、API 儲存
+         
         </footer>
       </div>
     </div>
