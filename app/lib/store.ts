@@ -10,12 +10,7 @@ export type CourtAssignment = {
 export type Player = {
   id: string;
   name: string;
-  playedCount: number; // 累積上場次數（可依你規則：每上場一次+1）
-  history: Array<{
-    at: string; // ISO time
-    courtId: number;
-    role: "A" | "B";
-  }>;
+  playedCount: number;
 };
 
 export type SchedulerState = {

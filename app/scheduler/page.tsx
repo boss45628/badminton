@@ -1,5 +1,5 @@
 "use client";
-
+import { useToast } from "../components/toast";
 import { useEffect, useMemo, useState } from "react";
 import {
   defaultAssignments,
@@ -76,6 +76,9 @@ export default function SchedulerPage() {
     return m;
   }, [state.players]);
 
+  // 每隊最多 2 人（可單可雙：單打=1，雙打=2）
+  const maxPerTeam = 2;
+
   function addPlayer() {
     const name = newName.trim();
     if (!name) return;
@@ -84,6 +87,8 @@ export default function SchedulerPage() {
       id: uid(),
       name,
       playedCount: 0,
+      // 如果你的 store.ts 還有 history 欄位也沒差，先不使用它
+      // @ts-ignore
       history: [],
     };
 
@@ -105,6 +110,26 @@ export default function SchedulerPage() {
       })),
     }));
   }
+//增加 增減場次
+  function adjustPlayerCount(id: string, delta: number) {
+  setState((prev) => ({
+    ...prev,
+    players: prev.players.map((p) =>
+      p.id === id
+        ? { ...p, playedCount: Math.max(0, p.playedCount + delta) }
+        : p
+    ),
+  }));
+}
+
+function resetPlayerCount(id: string) {
+  setState((prev) => ({
+    ...prev,
+    players: prev.players.map((p) =>
+      p.id === id ? { ...p, playedCount: 0 } : p
+    ),
+  }));
+}
 
   function updateAssignment(courtId: number, patch: Partial<CourtAssignment>) {
     setState((prev) => ({
@@ -115,56 +140,86 @@ export default function SchedulerPage() {
     }));
   }
 
-  // 你可以決定：單打=1人 / 雙打=2人；這裡先做「最多 2 人」(可兼容單打/雙打)
-  const maxPerTeam = 2;
-
-  function clickPick(courtId: number, side: "A" | "B", playerId: string) {
-    const a = state.assignments.find((x) => x.courtId === courtId)!;
-
-    const otherSideIds = side === "A" ? a.teamBPlayerIds : a.teamAPlayerIds;
-    // 同一個人不能同時在 A/B
-    if (otherSideIds.includes(playerId)) return;
-
-    const key = side === "A" ? "teamAPlayerIds" : "teamBPlayerIds";
-    const list = side === "A" ? a.teamAPlayerIds : a.teamBPlayerIds;
-
-    updateAssignment(courtId, { [key]: toggleId(list, playerId, maxPerTeam) } as any);
+  function findPlayerCourt(playerId: string) {
+    for (const asg of state.assignments) {
+      if (asg.teamAPlayerIds.includes(playerId)) return { courtId: asg.courtId, side: "A" as const };
+      if (asg.teamBPlayerIds.includes(playerId)) return { courtId: asg.courtId, side: "B" as const };
+    }
+    return null;
   }
 
-  function confirmOnCourt() {
-    const now = new Date().toISOString();
+ const { showToast } = useToast();
 
-    // 被安排上場的人（去重）
-    const onCourtIds = new Set<string>();
-    for (const a of state.assignments) {
-      for (const id of a.teamAPlayerIds) onCourtIds.add(id);
-      for (const id of a.teamBPlayerIds) onCourtIds.add(id);
+  function clickPick(courtId: number, side: "A" | "B", playerId: string) {
+  const a = state.assignments.find((x) => x.courtId === courtId);
+  if (!a) return;
+
+  const list = side === "A" ? a.teamAPlayerIds : a.teamBPlayerIds;
+  const isRemoving = list.includes(playerId);
+
+ 
+  // ✅ 加入時：全場防重複
+  if (!isRemoving) {
+    const found = findPlayerCourt(playerId); // 你原本新增的 helper
+    if (found && found.courtId !== courtId) {
+      const name = playersById.get(playerId)?.name ?? "該玩家";
+      showToast(`${name} 已經在 Court ${found.courtId}（${found.side}隊）上場了，不能重複上場。`, "warning");
+      return;
     }
+  }
 
-    setState((prev) => ({
-      ...prev,
-      players: prev.players.map((p) => {
-        if (!onCourtIds.has(p.id)) return p;
+  // 同場不可同時 A/B
+  const otherSideIds = side === "A" ? a.teamBPlayerIds : a.teamAPlayerIds;
+  if (!isRemoving && otherSideIds.includes(playerId)) {
+    const name = playersById.get(playerId)?.name ?? "該玩家";
+    showToast(`${name} 已經在本場另一隊了，不能重複加入。`, "warning");
+    return;
+  }
 
-        // 每次「確認上場」就算一次上場（你也可以改成：每結束一場才+1）
-        const entries: Player["history"] = [];
+  const key = side === "A" ? "teamAPlayerIds" : "teamBPlayerIds";
+  updateAssignment(courtId, { [key]: toggleId(list, playerId, maxPerTeam) } as any);
+}
 
-        for (const asg of prev.assignments) {
-          if (asg.teamAPlayerIds.includes(p.id)) {
-            entries.push({ at: now, courtId: asg.courtId, role: "A" });
-          }
-          if (asg.teamBPlayerIds.includes(p.id)) {
-            entries.push({ at: now, courtId: asg.courtId, role: "B" });
-          }
-        }
 
-        return {
-          ...p,
-          playedCount: p.playedCount + 1,
-          history: [...entries, ...p.history],
-        };
-      }),
-    }));
+
+  // ✅ 全場記錄：四面場所有上場者 +1（不記時間）
+  function recordThisRoundSimple() {
+    setState((prev) => {
+      const onCourtIds = new Set<string>();
+      for (const asg of prev.assignments) {
+        for (const id of asg.teamAPlayerIds) onCourtIds.add(id);
+        for (const id of asg.teamBPlayerIds) onCourtIds.add(id);
+      }
+      if (onCourtIds.size === 0) return prev;
+
+      return {
+        ...prev,
+        players: prev.players.map((p) =>
+          onCourtIds.has(p.id) ? { ...p, playedCount: p.playedCount + 1 } : p
+        ),
+      };
+    });
+  }
+
+  // ✅ 單一場記錄：只把某一面場上場者 +1（不記時間）
+  function recordCourtSimple(courtId: number) {
+    setState((prev) => {
+      const asg = prev.assignments.find((x) => x.courtId === courtId);
+      if (!asg) return prev;
+
+      const onCourtIds = new Set<string>([
+        ...asg.teamAPlayerIds,
+        ...asg.teamBPlayerIds,
+      ]);
+      if (onCourtIds.size === 0) return prev;
+
+      return {
+        ...prev,
+        players: prev.players.map((p) =>
+          onCourtIds.has(p.id) ? { ...p, playedCount: p.playedCount + 1 } : p
+        ),
+      };
+    });
   }
 
   function clearAllAssignments() {
@@ -174,21 +229,42 @@ export default function SchedulerPage() {
     }));
   }
 
+  //全部清除
+  function clearAllData() {
+  const ok = window.confirm("確定要【全部清除】嗎？\n（會清掉玩家名單與四面場排場）");
+  if (!ok) return;
+
+  setState({ players: [], assignments: defaultAssignments() });
+}
+
+  const totalOnCourt = useMemo(() => {
+    let n = 0;
+    for (const a of state.assignments) n += a.teamAPlayerIds.length + a.teamBPlayerIds.length;
+    return n;
+  }, [state.assignments]);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
       <div className="mx-auto max-w-7xl px-4 py-8">
         <div className="flex flex-col gap-2">
-          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">排場（上下場 / 場次紀錄）</h1>
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">排場（打球次數紀錄）</h1>
           <p className="text-sm text-slate-600">
-            {/*  先用 localStorage 暫存。未來接 API 可以把 players/assignments 改成從後端讀寫。*/}
-           
+            {/*排上場名單 → 按「本場 +1」或「全場 +1」→ 只記錄次數（localStorage 會保存）*/}
           </p>
         </div>
 
         {/* Top actions */}
         <div className="mt-5 flex flex-wrap items-center gap-2">
-          <Button onClick={confirmOnCourt}>確認上場（+1 場次）</Button>
-          <Button onClick={clearAllAssignments} variant="outline">清空四面場</Button>
+          <Button onClick={recordThisRoundSimple} disabled={totalOnCourt === 0}>
+            全場 +1（上場者）
+          </Button>
+          <Button onClick={clearAllAssignments} variant="outline">
+            清空四面場
+          </Button>
+          <Button onClick={clearAllData} variant="danger">
+            全部清除（含名單）
+          </Button>
+          <Pill>目前上場：{totalOnCourt} 人</Pill>
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -197,7 +273,7 @@ export default function SchedulerPage() {
             <div className="flex items-end justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900">玩家名單</h2>
-                <p className="mt-1 text-xs text-slate-500">點選玩家後，可到右側場地加入 A/B。</p>
+                <p className="mt-1 text-xs text-slate-500">場次少的會排在前面（方便輪替）</p>
               </div>
               <Pill>{state.players.length} 人</Pill>
             </div>
@@ -223,18 +299,35 @@ export default function SchedulerPage() {
                   先新增玩家，才能開始排場。
                 </div>
               ) : (
-                state.players
-                  .slice()
-                  .sort((a, b) => a.playedCount - b.playedCount) // 先讓場次少的排前面（方便輪替）
+                state.players             
                   .map((p) => (
-                    <div key={p.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-bold text-slate-900">{p.name}</div>
-                        <div className="mt-1 text-xs text-slate-500">上場：{p.playedCount} 次</div>
+                    <div key={p.id} className="rounded-xl border border-slate-200 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-extrabold text-slate-900">{p.name}</div>
+                          <div className="mt-1 text-xs text-slate-500">打球次數：{p.playedCount}</div>
+                        </div>
+                        <Button onClick={() => removePlayer(p.id)} variant="outline">
+                          刪除
+                        </Button>
                       </div>
-                      <Button onClick={() => removePlayer(p.id)} variant="outline">
-                        刪除
-                      </Button>
+
+                      {/* ✅ 這就是你要的：用按鈕增減，避免輸入錯 */}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button onClick={() => adjustPlayerCount(p.id, +1)} variant="outline">
+                          +1
+                        </Button>
+                        <Button
+                          onClick={() => adjustPlayerCount(p.id, -1)}
+                          variant="outline"
+                          disabled={p.playedCount === 0}
+                        >
+                          -1
+                        </Button>
+                        <Button onClick={() => resetPlayerCount(p.id)} variant="outline">
+                          歸零
+                        </Button>
+                      </div>
                     </div>
                   ))
               )}
@@ -246,15 +339,22 @@ export default function SchedulerPage() {
             {state.assignments.map((asg) => {
               const teamA = asg.teamAPlayerIds.map((id) => playersById.get(id)?.name ?? "？");
               const teamB = asg.teamBPlayerIds.map((id) => playersById.get(id)?.name ?? "？");
+              const headCount = asg.teamAPlayerIds.length + asg.teamBPlayerIds.length;
 
               return (
                 <div key={asg.courtId} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="flex items-start justify-between">
+                  <div className="flex items-start justify-between gap-3">
                     <div>
                       <h3 className="text-base font-extrabold text-slate-900">Court {asg.courtId}</h3>
                       <p className="mt-1 text-xs text-slate-500">每隊最多 {maxPerTeam} 人（可單可雙）</p>
                     </div>
-                    <Pill>{asg.teamAPlayerIds.length + asg.teamBPlayerIds.length} 人上場</Pill>
+
+                    <div className="flex items-center gap-2">
+                      <Pill>{headCount} 人</Pill>
+                      <Button onClick={() => recordCourtSimple(asg.courtId)} disabled={headCount === 0}>
+                        本場 +1
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="mt-4 grid grid-cols-2 gap-3">
@@ -263,9 +363,7 @@ export default function SchedulerPage() {
                         <p className="text-sm font-bold text-slate-900">A隊</p>
                         <Pill>{asg.teamAPlayerIds.length}/{maxPerTeam}</Pill>
                       </div>
-                      <p className="mt-2 text-sm text-slate-700">
-                        {teamA.length ? teamA.join("、") : "尚未選擇"}
-                      </p>
+                      <p className="mt-2 text-sm text-slate-700">{teamA.length ? teamA.join("、") : "尚未選擇"}</p>
                     </div>
 
                     <div className="rounded-2xl bg-slate-50 p-3">
@@ -273,14 +371,12 @@ export default function SchedulerPage() {
                         <p className="text-sm font-bold text-slate-900">B隊</p>
                         <Pill>{asg.teamBPlayerIds.length}/{maxPerTeam}</Pill>
                       </div>
-                      <p className="mt-2 text-sm text-slate-700">
-                        {teamB.length ? teamB.join("、") : "尚未選擇"}
-                      </p>
+                      <p className="mt-2 text-sm text-slate-700">{teamB.length ? teamB.join("、") : "尚未選擇"}</p>
                     </div>
                   </div>
 
                   <div className="mt-4">
-                    <p className="text-xs font-semibold text-slate-600">點選玩家加入（同一人不可同時在 A/B）</p>
+                    <p className="text-xs font-semibold text-slate-600">點選玩家加入/移除（同一人不可同時在 A/B）</p>
 
                     <div className="mt-2 flex flex-wrap gap-2">
                       {state.players.length === 0 ? (
@@ -304,7 +400,7 @@ export default function SchedulerPage() {
                                   : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50",
                               ].join(" ")}
                               onClick={() => {
-                                // 預設：先嘗試加 A，A滿了就加 B（你也可以改成按住Shift加入B）
+                                // 預設：先加 A；A 滿了再加 B
                                 const canAddA = !inB && (inA || asg.teamAPlayerIds.length < maxPerTeam);
                                 if (canAddA) clickPick(asg.courtId, "A", p.id);
                                 else clickPick(asg.courtId, "B", p.id);
@@ -319,16 +415,10 @@ export default function SchedulerPage() {
                     </div>
 
                     <div className="mt-3 flex gap-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => updateAssignment(asg.courtId, { teamAPlayerIds: [] })}
-                      >
+                      <Button variant="outline" onClick={() => updateAssignment(asg.courtId, { teamAPlayerIds: [] })}>
                         清 A
                       </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => updateAssignment(asg.courtId, { teamBPlayerIds: [] })}
-                      >
+                      <Button variant="outline" onClick={() => updateAssignment(asg.courtId, { teamBPlayerIds: [] })}>
                         清 B
                       </Button>
                       <Button
@@ -346,8 +436,7 @@ export default function SchedulerPage() {
         </div>
 
         <footer className="mt-8 text-center text-xs text-slate-400">
-          {/* v0：排場（localStorage）｜下一步：把排好的隊名自動帶入計分版 + 每場結束後自動換人*/}
-         
+          {/*v0：排場 + 次數紀錄（不記時間）｜下一步可加：自動輪替建議、匯出/匯入*/}
         </footer>
       </div>
     </div>
