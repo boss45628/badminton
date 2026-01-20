@@ -59,7 +59,7 @@ export default function SchedulerPage() {
   });
 
   const [newName, setNewName] = useState<string>("");
-
+  const [bulkText, setBulkText] = useState<string>("");
   // load
   useEffect(() => {
     setState(loadSchedulerState());
@@ -98,6 +98,48 @@ export default function SchedulerPage() {
     }));
     setNewName("");
   }
+
+//批次匯入
+function importPlayersBatch() {
+  const raw = bulkText.trim();
+  if (!raw) return;
+
+  // 支援：換行、逗號、頓號、空白、分號
+  const names = raw
+    .split(/[\n,，、;；\t ]+/g)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (names.length === 0) return;
+
+  setState((prev) => {
+    const existing = new Set(prev.players.map((p) => p.name.trim()));
+    const toAdd: Player[] = [];
+
+    for (const name of names) {
+      if (existing.has(name)) continue; // 去重
+      existing.add(name);
+
+      toAdd.push({
+        id: uid(),
+        name,
+        playedCount: 0,
+      });
+    }
+
+    if (toAdd.length === 0) return prev;
+showToast(`已匯入 ${toAdd.length} 位玩家`, "success");
+    return {
+      ...prev,
+      players: [...prev.players, ...toAdd],
+    };
+  });
+
+  setBulkText("");
+  
+}
+
+
 
   function removePlayer(id: string) {
     setState((prev) => ({
@@ -211,13 +253,14 @@ function resetPlayerCount(id: string) {
         ...asg.teamAPlayerIds,
         ...asg.teamBPlayerIds,
       ]);
-      if (onCourtIds.size === 0) return prev;
 
+      if (onCourtIds.size === 0) return prev;
+      showToast(`場次新增成功`, "success");
       return {
         ...prev,
         players: prev.players.map((p) =>
           onCourtIds.has(p.id) ? { ...p, playedCount: p.playedCount + 1 } : p
-        ),
+        ),                 
       };
     });
   }
@@ -278,7 +321,7 @@ function resetPlayerCount(id: string) {
               <Pill>{state.players.length} 人</Pill>
             </div>
 
-            <div className="mt-4 flex gap-2">
+            {/*<div className="mt-4 flex gap-2">
               <input
                 className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
                 value={newName}
@@ -291,8 +334,30 @@ function resetPlayerCount(id: string) {
               <Button onClick={addPlayer} disabled={!newName.trim()}>
                 新增
               </Button>
-            </div>
+              
+            </div>*/}
+<div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+  <div className="flex items-center justify-between">
+    <div className="text-sm font-bold text-slate-900">批次匯入</div>
+    <Pill>支援換行 / 逗號 / 空白</Pill>
+  </div>
 
+  <textarea
+    className="mt-3 h-28 w-full resize-none rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
+    value={bulkText}
+    onChange={(e) => setBulkText(e.target.value)}
+    placeholder={`例：\n小明\n小華\n小美\n阿哲`}
+  />
+
+  <div className="mt-3 flex items-center gap-2">
+    <Button onClick={importPlayersBatch} disabled={!bulkText.trim()}>
+      一鍵匯入
+    </Button>
+    <Button onClick={() => setBulkText("")} variant="outline" disabled={!bulkText.trim()}>
+      清空
+    </Button>
+  </div>
+</div>
             <div className="mt-4 space-y-2">
               {state.players.length === 0 ? (
                 <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
@@ -351,8 +416,9 @@ function resetPlayerCount(id: string) {
 
                     <div className="flex items-center gap-2">
                       <Pill>{headCount} 人</Pill>
-                      <Button onClick={() => recordCourtSimple(asg.courtId)} disabled={headCount === 0}>
-                        本場 +1
+                      <Button onClick={() => recordCourtSimple(asg.courtId)} disabled={headCount === 0} >
+                        本場 +1 
+                      
                       </Button>
                     </div>
                   </div>
